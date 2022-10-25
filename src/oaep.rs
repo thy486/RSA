@@ -104,7 +104,7 @@ pub fn decrypt_public<R: RngCore + CryptoRng, SK: PublicKey>(
 ) -> Result<Vec<u8>> {
     key::check_public(priv_key)?;
 
-    let res = decrypt_public_inner(rng, priv_key, ciphertext, digest, mgf_digest, label)?;
+    let res = decrypt_inner(rng, priv_key, ciphertext, digest, mgf_digest, label)?;
     if res.is_none().into() {
         return Err(Error::Decryption);
     }
@@ -118,31 +118,7 @@ pub fn decrypt_public<R: RngCore + CryptoRng, SK: PublicKey>(
 /// `rng` is given. It returns one or zero in valid that indicates whether the
 /// plaintext was correctly structured.
 #[inline]
-fn decrypt_inner<R: RngCore + CryptoRng, SK: PrivateKey>(
-    rng: Option<&mut R>,
-    priv_key: &SK,
-    ciphertext: &[u8],
-    digest: &mut dyn DynDigest,
-    mgf_digest: &mut dyn DynDigest,
-    label: Option<String>,
-) -> Result<CtOption<(Vec<u8>, u32)>> {
-    decrypt_common_inner(rng, priv_key, ciphertext, digest, mgf_digest, label)
-}
-
-#[inline]
-fn decrypt_public_inner<R: RngCore + CryptoRng, SK: PublicKey>(
-    rng: Option<&mut R>,
-    pubv_key: &SK,
-    ciphertext: &[u8],
-    digest: &mut dyn DynDigest,
-    mgf_digest: &mut dyn DynDigest,
-    label: Option<String>,
-) -> Result<CtOption<(Vec<u8>, u32)>> {
-    decrypt_common_inner(rng, pubv_key, ciphertext, digest, mgf_digest, label)
-}
-
-#[inline]
-fn decrypt_common_inner<R: RngCore + CryptoRng, SK: DecryptionPrimitive + key::PublicKeyParts>(
+fn decrypt_inner<R: RngCore + CryptoRng, SK: DecryptionPrimitive + key::PublicKeyParts>(
     rng: Option<&mut R>,
     key: &SK,
     ciphertext: &[u8],
