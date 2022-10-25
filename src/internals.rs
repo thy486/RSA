@@ -6,6 +6,7 @@ use num_traits::{One, Signed, Zero};
 use rand_core::{CryptoRng, RngCore};
 use zeroize::Zeroize;
 
+use crate::RsaPublicKey;
 use crate::errors::{Error, Result};
 use crate::key::{PublicKeyParts, RsaPrivateKey};
 
@@ -104,6 +105,41 @@ pub fn decrypt<R: RngCore + CryptoRng>(
     }
 }
 
+#[inline]
+pub fn decrypt_public<R: RngCore + CryptoRng>(
+    mut rng: Option<&mut R>,
+    pubv_key: &RsaPublicKey,
+    c: &BigUint,
+) -> Result<BigUint> {
+    if c >= pubv_key.n() {
+        return Err(Error::Decryption);
+    }
+
+    if pubv_key.n().is_zero() {
+        return Err(Error::Decryption);
+    }
+
+    let mut ir = None;
+
+    let c = if let Some(ref mut rng) = rng {
+        let (blinded, unblinder) = blind(rng, pubv_key, c);
+        ir = Some(unblinder);
+        Cow::Owned(blinded)
+    } else {
+        Cow::Borrowed(c)
+    };
+
+    let m = c.modpow(pubv_key.e(), pubv_key.n());
+
+    match ir {
+        Some(ref ir) => {
+            // unblind
+            Ok(unblind(pubv_key, &m, ir))
+        }
+        None => Ok(m),
+    }
+}
+
 /// Performs RSA decryption, resulting in a plaintext `BigUint`.
 /// Peforms RSA blinding if an `Rng` is passed.
 /// This will also check for errors in the CRT computation.
@@ -125,6 +161,18 @@ pub fn decrypt_and_check<R: RngCore + CryptoRng>(
 
     Ok(m)
 }
+
+#[inline]
+pub fn decrypt_with_public<R: RngCore + CryptoRng>(
+    rng: Option<&mut R>,
+    pubv_key: &RsaPublicKey,
+    c: &BigUint,
+) -> Result<BigUint> {
+    let m = decrypt_public(rng, pubv_key, c)?;
+
+    Ok(m)
+}
+
 
 /// Returns the blinded c, along with the unblinding factor.
 pub fn blind<R: RngCore + CryptoRng, K: PublicKeyParts>(

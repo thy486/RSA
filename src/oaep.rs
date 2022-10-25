@@ -10,6 +10,7 @@ use zeroize::Zeroizing;
 use crate::algorithms::mgf1_xor;
 use crate::errors::{Error, Result};
 use crate::key::{self, PrivateKey, PublicKey};
+use crate::raw::DecryptionPrimitive;
 
 // 2**61 -1 (pow is not const yet)
 // TODO: This is the maximum for SHA-1, unclear from the RFC what the values are for other hashing functions.
@@ -92,6 +93,27 @@ pub fn decrypt<R: RngCore + CryptoRng, SK: PrivateKey>(
     Ok(out[index as usize..].to_vec())
 }
 
+#[inline]
+pub fn decrypt_public<R: RngCore + CryptoRng, SK: PublicKey>(
+    rng: Option<&mut R>,
+    priv_key: &SK,
+    ciphertext: &[u8],
+    digest: &mut dyn DynDigest,
+    mgf_digest: &mut dyn DynDigest,
+    label: Option<String>,
+) -> Result<Vec<u8>> {
+    key::check_public(priv_key)?;
+
+    let res = decrypt_public_inner(rng, priv_key, ciphertext, digest, mgf_digest, label)?;
+    if res.is_none().into() {
+        return Err(Error::Decryption);
+    }
+
+    let (out, index) = res.unwrap();
+
+    Ok(out[index as usize..].to_vec())
+}
+
 /// Decrypts ciphertext using `priv_key` and blinds the operation if
 /// `rng` is given. It returns one or zero in valid that indicates whether the
 /// plaintext was correctly structured.
@@ -104,7 +126,31 @@ fn decrypt_inner<R: RngCore + CryptoRng, SK: PrivateKey>(
     mgf_digest: &mut dyn DynDigest,
     label: Option<String>,
 ) -> Result<CtOption<(Vec<u8>, u32)>> {
-    let k = priv_key.size();
+    decrypt_common_inner(rng, priv_key, ciphertext, digest, mgf_digest, label)
+}
+
+#[inline]
+fn decrypt_public_inner<R: RngCore + CryptoRng, SK: PublicKey>(
+    rng: Option<&mut R>,
+    pubv_key: &SK,
+    ciphertext: &[u8],
+    digest: &mut dyn DynDigest,
+    mgf_digest: &mut dyn DynDigest,
+    label: Option<String>,
+) -> Result<CtOption<(Vec<u8>, u32)>> {
+    decrypt_common_inner(rng, pubv_key, ciphertext, digest, mgf_digest, label)
+}
+
+#[inline]
+fn decrypt_common_inner<R: RngCore + CryptoRng, SK: DecryptionPrimitive + key::PublicKeyParts>(
+    rng: Option<&mut R>,
+    key: &SK,
+    ciphertext: &[u8],
+    digest: &mut dyn DynDigest,
+    mgf_digest: &mut dyn DynDigest,
+    label: Option<String>,
+) -> Result<CtOption<(Vec<u8>, u32)>> {
+    let k = key.size();
     if k < 11 {
         return Err(Error::Decryption);
     }
@@ -115,7 +161,7 @@ fn decrypt_inner<R: RngCore + CryptoRng, SK: PrivateKey>(
         return Err(Error::Decryption);
     }
 
-    let mut em = priv_key.raw_decryption_primitive(rng, ciphertext, priv_key.size())?;
+    let mut em = key.raw_decryption_primitive(rng, ciphertext, key.size())?;
 
     let label = label.unwrap_or_default();
     if label.len() as u64 > MAX_LABEL_LEN {

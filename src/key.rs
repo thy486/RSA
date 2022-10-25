@@ -170,7 +170,7 @@ impl From<&RsaPrivateKey> for RsaPublicKey {
 }
 
 /// Generic trait for operations on a public key.
-pub trait PublicKey: EncryptionPrimitive + PublicKeyParts {
+pub trait PublicKey: EncryptionPrimitive + DecryptionPrimitive + PublicKeyParts {
     /// Encrypt the given message.
     fn encrypt<R: RngCore + CryptoRng>(
         &self,
@@ -184,6 +184,8 @@ pub trait PublicKey: EncryptionPrimitive + PublicKeyParts {
     /// passed in through `hash`.
     /// If the message is valid `Ok(())` is returned, otherwiese an `Err` indicating failure.
     fn verify(&self, padding: PaddingScheme, hashed: &[u8], sig: &[u8]) -> Result<()>;
+    /// Decrypt the given message.
+    fn decrypt(&self, padding: PaddingScheme, ciphertext: &[u8]) -> Result<Vec<u8>>;
 }
 
 impl PublicKeyParts for RsaPublicKey {
@@ -225,6 +227,28 @@ impl PublicKey for RsaPublicKey {
                 pkcs1v15::verify(self, prefix.as_ref(), hashed, sig)
             }
             PaddingScheme::PSS { mut digest, .. } => pss::verify(self, hashed, sig, &mut *digest),
+            _ => Err(Error::InvalidPaddingScheme),
+        }
+    }
+
+    fn decrypt(&self, padding: PaddingScheme, ciphertext: &[u8]) -> Result<Vec<u8>> {
+        match padding {
+            // need to pass any Rng as the type arg, so the type checker is happy, it is not actually used for anything
+            PaddingScheme::PKCS1v15Encrypt => {
+                pkcs1v15::decrypt_public::<DummyRng, _>(None, self, ciphertext)
+            }
+            PaddingScheme::OAEP {
+                mut digest,
+                mut mgf_digest,
+                label,
+            } => oaep::decrypt_public::<DummyRng, _>(
+                None,
+                self,
+                ciphertext,
+                &mut *digest,
+                &mut *mgf_digest,
+                label,
+            ),
             _ => Err(Error::InvalidPaddingScheme),
         }
     }

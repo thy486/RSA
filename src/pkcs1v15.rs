@@ -18,6 +18,7 @@ use zeroize::Zeroizing;
 use crate::dummy_rng::DummyRng;
 use crate::errors::{Error, Result};
 use crate::key::{self, PrivateKey, PublicKey};
+use crate::raw::DecryptionPrimitive;
 use crate::{RsaPrivateKey, RsaPublicKey};
 
 #[derive(Clone)]
@@ -145,6 +146,20 @@ pub(crate) fn decrypt<R: RngCore + CryptoRng, SK: PrivateKey>(
     Ok(out[index as usize..].to_vec())
 }
 
+#[inline]
+pub(crate) fn decrypt_public<R: RngCore + CryptoRng, SK: PublicKey>(
+    rng: Option<&mut R>,
+    pubv_key: &SK,
+    ciphertext: &[u8],
+) -> Result<Vec<u8>> {
+    let (valid, out, index) = decrypt_public_inner(rng, pubv_key, ciphertext)?;
+    if valid == 0 {
+        return Err(Error::Decryption);
+    }
+
+    Ok(out[index as usize..].to_vec())
+}
+
 // Calculates the signature of hashed using
 // RSASSA-PKCS1-V1_5-SIGN from RSA PKCS#1 v1.5. Note that `hashed` must
 // be the result of hashing the input message using the given hash
@@ -252,15 +267,33 @@ fn decrypt_inner<R: RngCore + CryptoRng, SK: PrivateKey>(
     priv_key: &SK,
     ciphertext: &[u8],
 ) -> Result<(u8, Vec<u8>, u32)> {
-    let k = priv_key.size();
+    decrypt_common_inner(rng, priv_key, ciphertext, &0, &2)
+}
+
+fn decrypt_public_inner<R: RngCore + CryptoRng, SK: PublicKey>(
+    rng: Option<&mut R>,
+    pubv_key: &SK,
+    ciphertext: &[u8],
+) -> Result<(u8, Vec<u8>, u32)> {
+    decrypt_common_inner(rng, pubv_key, ciphertext, &0, &1)
+}
+
+fn decrypt_common_inner<R: RngCore + CryptoRng, SK: DecryptionPrimitive + key::PublicKeyParts>(
+    rng: Option<&mut R>,
+    key: &SK,
+    ciphertext: &[u8],
+    check_first_byte: &u8,
+    check_second_byte: &u8,
+) -> Result<(u8, Vec<u8>, u32)> {
+    let k = key.size();
     if k < 11 {
         return Err(Error::Decryption);
     }
 
-    let em = priv_key.raw_decryption_primitive(rng, ciphertext, priv_key.size())?;
+    let em = key.raw_decryption_primitive(rng, ciphertext, key.size())?;
 
-    let first_byte_is_zero = em[0].ct_eq(&0u8);
-    let second_byte_is_two = em[1].ct_eq(&2u8);
+    let first_byte_is_true = em[0].ct_eq(check_first_byte);
+    let second_byte_is_true = em[1].ct_eq(check_second_byte);
 
     // The remainder of the plaintext must be a string of non-zero random
     // octets, followed by a 0, followed by the message.
@@ -283,7 +316,7 @@ fn decrypt_inner<R: RngCore + CryptoRng, SK: PrivateKey>(
     // go, but very likely not sufficient.
     let valid_ps = Choice::from((((2i32 + 8i32 - index as i32 - 1i32) >> 31) & 1) as u8);
     let valid =
-        first_byte_is_zero & second_byte_is_two & Choice::from(!looking_for_index & 1) & valid_ps;
+        first_byte_is_true & second_byte_is_true & Choice::from(!looking_for_index & 1) & valid_ps;
     index = u32::conditional_select(&0, &(index + 1), valid);
 
     Ok((valid.unwrap_u8(), em, index))
