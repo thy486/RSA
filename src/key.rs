@@ -32,7 +32,14 @@ pub trait PublicKeyParts {
     }
 }
 
-pub trait PrivateKey: DecryptionPrimitive + PublicKeyParts {}
+pub trait PrivateKey: EncryptionPrimitive + DecryptionPrimitive + PublicKeyParts {/// Encrypt the given message.
+    fn encrypt_private<R: RngCore + CryptoRng>(
+        &self,
+        rng: &mut R,
+        padding: PaddingScheme,
+        msg: &[u8],
+    ) -> Result<Vec<u8>>;
+}
 
 /// Represents the public part of an RSA key.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -171,7 +178,7 @@ impl From<&RsaPrivateKey> for RsaPublicKey {
 }
 
 /// Generic trait for operations on a public key.
-pub trait PublicKey: EncryptionPrimitive + PublicKeyParts {
+pub trait PublicKey: EncryptionPrimitive + PublicKeyParts + DecryptionPrimitive {
     /// Encrypt the given message.
     fn encrypt<R: RngCore + CryptoRng>(
         &self,
@@ -185,6 +192,13 @@ pub trait PublicKey: EncryptionPrimitive + PublicKeyParts {
     /// passed in through `hash`.
     /// If the message is valid `Ok(())` is returned, otherwiese an `Err` indicating failure.
     fn verify(&self, padding: PaddingScheme, hashed: &[u8], sig: &[u8]) -> Result<()>;
+
+    /// Decrypt the given message.
+    fn decrypt_public(
+        &self,
+        padding: PaddingScheme,
+        msg: &[u8],
+    ) -> Result<Vec<u8>>;
 }
 
 impl PublicKeyParts for RsaPublicKey {
@@ -226,6 +240,32 @@ impl PublicKey for RsaPublicKey {
                 pkcs1v15::verify(self, prefix.as_ref(), hashed, sig)
             }
             PaddingScheme::PSS { mut digest, .. } => pss::verify(self, hashed, sig, &mut *digest),
+            _ => Err(Error::InvalidPaddingScheme),
+        }
+    }
+
+    fn decrypt_public(
+        &self,
+        padding: PaddingScheme,
+        ciphertext: &[u8],
+    ) -> Result<Vec<u8>> {
+        match padding {
+            // need to pass any Rng as the type arg, so the type checker is happy, it is not actually used for anything
+            PaddingScheme::PKCS1v15Encrypt => {
+                pkcs1v15::decrypt_public::<DummyRng, _>(None, self, ciphertext)
+            }
+            PaddingScheme::OAEP {
+                mut digest,
+                mut mgf_digest,
+                label,
+            } => oaep::decrypt_public::<DummyRng, _>(
+                None,
+                self,
+                ciphertext,
+                &mut *digest,
+                &mut *mgf_digest,
+                label,
+            ),
             _ => Err(Error::InvalidPaddingScheme),
         }
     }
@@ -277,7 +317,24 @@ impl PublicKeyParts for RsaPrivateKey {
     }
 }
 
-impl PrivateKey for RsaPrivateKey {}
+impl PrivateKey for RsaPrivateKey {
+    fn encrypt_private<R: RngCore + CryptoRng>(
+        &self,
+        rng: &mut R,
+        padding: PaddingScheme,
+        msg: &[u8],
+    ) -> Result<Vec<u8>> {
+        match padding {
+            PaddingScheme::PKCS1v15Encrypt => pkcs1v15::encrypt_private(rng, self, msg),
+            PaddingScheme::OAEP {
+                mut digest,
+                mut mgf_digest,
+                label,
+            } => oaep::encrypt_private(rng, self, msg, &mut *digest, &mut *mgf_digest, label),
+            _ => Err(Error::InvalidPaddingScheme),
+        }
+    }
+}
 
 impl RsaPrivateKey {
     /// Generate a new Rsa key pair of the given bit size using the passed in `rng`.

@@ -25,6 +25,7 @@ use zeroize::Zeroizing;
 use crate::dummy_rng::DummyRng;
 use crate::errors::{Error, Result};
 use crate::key::{self, PrivateKey, PublicKey};
+use crate::raw::DecryptionPrimitive;
 use crate::{RsaPrivateKey, RsaPublicKey};
 
 /// PKCS#1 v1.5 signatures as described in [RFC8017 § 8.2].
@@ -131,6 +132,32 @@ pub(crate) fn encrypt<R: RngCore + CryptoRng, PK: PublicKey>(
     pub_key.raw_encryption_primitive(&em, pub_key.size())
 }
 
+/// Encrypts the given message with RSA and the padding
+/// scheme from PKCS#1 v1.5.  The message must be no longer than the
+/// length of the public modulus minus 11 bytes.
+#[inline]
+pub(crate) fn encrypt_private<R: RngCore + CryptoRng, PK: PrivateKey>(
+    rng: &mut R,
+    priv_key: &PK,
+    msg: &[u8],
+) -> Result<Vec<u8>> {
+    key::check_public(priv_key)?;
+
+    let k = priv_key.size();
+    if msg.len() > k - 11 {
+        return Err(Error::MessageTooLong);
+    }
+
+    // EM = 0x00 || 0x01 || PS || 0x00 || M
+    let mut em = Zeroizing::new(vec![0u8; k]);
+    em[1] = 1;
+    non_zero_random_bytes(rng, &mut em[2..k - msg.len() - 1]);
+    em[k - msg.len() - 1] = 0;
+    em[k - msg.len()..].copy_from_slice(msg);
+
+    priv_key.raw_encryption_primitive(&em, priv_key.size())
+}
+
 /// Decrypts a plaintext using RSA and the padding scheme from PKCS#1 v1.5.
 ///
 /// If an `rng` is passed, it uses RSA blinding to avoid timing side-channel attacks.
@@ -149,6 +176,20 @@ pub(crate) fn decrypt<R: RngCore + CryptoRng, SK: PrivateKey>(
     key::check_public(priv_key)?;
 
     let (valid, out, index) = decrypt_inner(rng, priv_key, ciphertext)?;
+    if valid == 0 {
+        return Err(Error::Decryption);
+    }
+
+    Ok(out[index as usize..].to_vec())
+}
+
+#[inline]
+pub(crate) fn decrypt_public<R: RngCore + CryptoRng, SK: PublicKey>(
+    rng: Option<&mut R>,
+    pub_key: &SK,
+    ciphertext: &[u8],
+) -> Result<Vec<u8>> {
+    let (valid, out, index) = decrypt_public_inner(rng, pub_key, ciphertext)?;
     if valid == 0 {
         return Err(Error::Decryption);
     }
@@ -263,15 +304,35 @@ fn decrypt_inner<R: RngCore + CryptoRng, SK: PrivateKey>(
     priv_key: &SK,
     ciphertext: &[u8],
 ) -> Result<(u8, Vec<u8>, u32)> {
-    let k = priv_key.size();
+    decrypt_common_inner(rng, priv_key, ciphertext, 0, 2)
+}
+
+#[inline]
+fn decrypt_public_inner<R: RngCore + CryptoRng, SK: PublicKey>(
+    rng: Option<&mut R>,
+    pubv_key: &SK,
+    ciphertext: &[u8],
+) -> Result<(u8, Vec<u8>, u32)> {
+    decrypt_common_inner(rng, pubv_key, ciphertext, 0, 1)
+}
+
+#[inline]
+fn decrypt_common_inner<R: RngCore + CryptoRng, SK: key::PublicKeyParts + DecryptionPrimitive>(
+    rng: Option<&mut R>,
+    key: &SK,
+    ciphertext: &[u8],
+    check_first_byte: u8,
+    check_second_byte: u8,
+) -> Result<(u8, Vec<u8>, u32)> {
+    let k = key.size();
     if k < 11 {
         return Err(Error::Decryption);
     }
 
-    let em = priv_key.raw_decryption_primitive(rng, ciphertext, priv_key.size())?;
+    let em = key.raw_decryption_primitive(rng, ciphertext, key.size())?;
 
-    let first_byte_is_zero = em[0].ct_eq(&0u8);
-    let second_byte_is_two = em[1].ct_eq(&2u8);
+    let first_byte_is_valid = em[0].ct_eq(&check_first_byte);
+    let second_byte_is_valid = em[1].ct_eq(&check_second_byte);
 
     // The remainder of the plaintext must be a string of non-zero random
     // octets, followed by a 0, followed by the message.
@@ -293,8 +354,10 @@ fn decrypt_inner<R: RngCore + CryptoRng, SK: PrivateKey>(
     // This is currently copy & paste from the constant time impl in
     // go, but very likely not sufficient.
     let valid_ps = Choice::from((((2i32 + 8i32 - index as i32 - 1i32) >> 31) & 1) as u8);
-    let valid =
-        first_byte_is_zero & second_byte_is_two & Choice::from(!looking_for_index & 1) & valid_ps;
+    let valid = first_byte_is_valid
+        & second_byte_is_valid
+        & Choice::from(!looking_for_index & 1)
+        & valid_ps;
     index = u32::conditional_select(&0, &(index + 1), valid);
 
     Ok((valid.unwrap_u8(), em, index))

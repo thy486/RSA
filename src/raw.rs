@@ -42,6 +42,46 @@ impl EncryptionPrimitive for RsaPublicKey {
     }
 }
 
+impl EncryptionPrimitive for RsaPrivateKey {
+    fn raw_encryption_primitive(&self, plaintext: &[u8], pad_size: usize) -> Result<Vec<u8>> {
+        let mut m = BigUint::from_bytes_be(plaintext);
+        let mut c = internals::encrypt_private(self, &m);
+        let mut c_bytes = c.to_bytes_be();
+        let ciphertext = internals::left_pad(&c_bytes, pad_size);
+
+        if pad_size < ciphertext.len() {
+            return Err(Error::Verification);
+        }
+
+        // clear out tmp values
+        m.zeroize();
+        c.zeroize();
+        c_bytes.zeroize();
+
+        Ok(ciphertext)
+    }
+}
+
+impl DecryptionPrimitive for RsaPublicKey {
+    fn raw_decryption_primitive<R: RngCore + CryptoRng>(
+        &self,
+        rng: Option<&mut R>,
+        ciphertext: &[u8],
+        pad_size: usize,
+    ) -> Result<Vec<u8>> {
+        let mut c = BigUint::from_bytes_be(ciphertext);
+        let mut m = internals::decrypt_public(rng, self, &c)?;
+        let mut m_bytes = m.to_bytes_be();
+        let plaintext = internals::left_pad(&m_bytes, pad_size);
+        // clear tmp values
+        c.zeroize();
+        m.zeroize();
+        m_bytes.zeroize();
+
+        Ok(plaintext)
+    }
+}
+
 impl DecryptionPrimitive for RsaPrivateKey {
     fn raw_decryption_primitive<R: RngCore + CryptoRng>(
         &self,

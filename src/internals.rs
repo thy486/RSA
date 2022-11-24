@@ -15,6 +15,12 @@ pub fn encrypt<K: PublicKeyParts>(key: &K, m: &BigUint) -> BigUint {
     m.modpow(key.e(), key.n())
 }
 
+/// Raw RSA encryption of m with the private key. No padding is performed.
+#[inline]
+pub fn encrypt_private(key: &RsaPrivateKey, m: &BigUint) -> BigUint {
+    m.modpow(key.d(), key.n())
+}
+
 /// Performs raw RSA decryption with no padding, resulting in a plaintext `BigUint`.
 /// Peforms RSA blinding if an `Rng` is passed.
 #[inline]
@@ -99,6 +105,41 @@ pub fn decrypt<R: RngCore + CryptoRng>(
         Some(ref ir) => {
             // unblind
             Ok(unblind(priv_key, &m, ir))
+        }
+        None => Ok(m),
+    }
+}
+
+#[inline]
+pub(crate) fn decrypt_public<R: RngCore + CryptoRng, K: PublicKeyParts>(
+    mut rng: Option<&mut R>,
+    pub_key: &K,
+    c: &BigUint,
+) -> Result<BigUint> {
+    if c >= pub_key.n() {
+        return Err(Error::Decryption);
+    }
+
+    if pub_key.n().is_zero() {
+        return Err(Error::Decryption);
+    }
+
+    let mut ir = None;
+
+    let c = if let Some(ref mut rng) = rng {
+        let (blinded, unblinder) = blind(rng, pub_key, c);
+        ir = Some(unblinder);
+        Cow::Owned(blinded)
+    } else {
+        Cow::Borrowed(c)
+    };
+
+    let m = c.modpow(pub_key.e(), pub_key.n());
+
+    match ir {
+        Some(ref ir) => {
+            // unblind
+            Ok(unblind(pub_key, &m, ir))
         }
         None => Ok(m),
     }
